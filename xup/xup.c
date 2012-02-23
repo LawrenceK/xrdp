@@ -140,11 +140,11 @@ lib_mod_connect(struct mod* mod)
   mod->server_fill_rect(mod, 0, 0, mod->width, mod->height);
   mod->server_end_update(mod);
   mod->server_msg(mod, "started connecting", 0);
-  /* only support 8 and 16 bpp connections from rdp client */
-  if (mod->bpp != 8 && mod->bpp != 16)
+  /* only support 8, 15, 16, and 24 bpp connections from rdp client */
+  if (mod->bpp != 8 && mod->bpp != 15 && mod->bpp != 16 && mod->bpp != 24)
   {
     mod->server_msg(mod,
-      "error - only supporting 8 and 16 bpp rdp connections", 0);
+      "error - only supporting 8, 15, 16, and 24 bpp rdp connections", 0);
     LIB_DEBUG(mod, "out lib_mod_connect error");
     return 1;
   }
@@ -206,6 +206,22 @@ lib_mod_connect(struct mod* mod)
     init_stream(s, 8192);
     s_push_layer(s, iso_hdr, 4);
     out_uint16_le(s, 103);
+    out_uint32_le(s, 300);
+    out_uint32_le(s, mod->width);
+    out_uint32_le(s, mod->height);
+    out_uint32_le(s, mod->bpp);
+    out_uint32_le(s, 0);
+    s_mark_end(s);
+    len = (int)(s->end - s->data);
+    s_pop_layer(s, iso_hdr);
+    out_uint32_le(s, len);
+    lib_send(mod, s->data, len);
+  }
+  if (error == 0)
+  {
+    init_stream(s, 8192);
+    s_push_layer(s, iso_hdr, 4);
+    out_uint16_le(s, 103);
     out_uint32_le(s, 200);
     /* x and y */
     i = 0;
@@ -245,10 +261,47 @@ lib_mod_event(struct mod* mod, int msg, tbus param1, tbus param2,
 {
   struct stream* s;
   int len;
+  int key;
   int rv;
 
   LIB_DEBUG(mod, "in lib_mod_event");
   make_stream(s);
+  if ((msg >= 15) && (msg <= 16)) /* key events */
+  {
+    key = param2;
+    if (key > 0)
+    {
+      if (key == 65027) /* altgr */
+      {
+        if (mod->shift_state)
+        {
+          g_writeln("special");
+          /* fix for mstsc sending left control down with altgr */
+          /* control down / up
+          msg param1 param2 param3 param4
+          15  0      65507  29     0
+          16  0      65507  29     49152 */
+          init_stream(s, 8192);
+          s_push_layer(s, iso_hdr, 4);
+          out_uint16_le(s, 103);
+          out_uint32_le(s, 16); /* key up */
+          out_uint32_le(s, 0);
+          out_uint32_le(s, 65507); /* left control */
+          out_uint32_le(s, 29); /* RDP scan code */
+          out_uint32_le(s, 0xc000); /* flags */
+          s_mark_end(s);
+          len = (int)(s->end - s->data);
+          s_pop_layer(s, iso_hdr);
+          out_uint32_le(s, len);
+          lib_send(mod, s->data, len);
+        }
+      }
+      if (key == 65507) /* left control */
+      {
+        mod->shift_state = msg == 15;
+      }
+    }
+  }
   init_stream(s, 8192);
   s_push_layer(s, iso_hdr, 4);
   out_uint16_le(s, 103);

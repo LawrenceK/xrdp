@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004-2010 Jay Sorg
+   Copyright (c) 2004-2012 Jay Sorg
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -31,8 +31,12 @@
 
 #include "arch.h"
 
+int APP_CC
+g_rm_temp_dir(void);
+int APP_CC
+g_mk_temp_dir(const char* app_name);
 void APP_CC
-g_init(void);
+g_init(const char* app_name);
 void APP_CC
 g_deinit(void);
 void* APP_CC
@@ -141,6 +145,8 @@ g_file_lock(int fd, int start, int len);
 int APP_CC
 g_chmod_hex(const char* filename, int flags);
 int APP_CC
+g_chown(const char* name, int uid, int gid);
+int APP_CC
 g_mkdir(const char* dirname);
 char* APP_CC
 g_get_current_dir(char* dirname, int maxlen);
@@ -216,6 +222,8 @@ void APP_CC
 g_signal_terminate(void (*func)(int));
 void APP_CC
 g_signal_pipe(void (*func)(int));
+void APP_CC
+g_signal_usr1(void (*func)(int));
 int APP_CC
 g_fork(void);
 int APP_CC

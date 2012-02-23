@@ -56,12 +56,12 @@ chansrv_cleanup(int pid)
 {
   char text[256];
 
-  g_snprintf(text, 255, "/tmp/xrdp_chansrv_%8.8x_main_term", pid);
+  g_snprintf(text, 255, "/tmp/.xrdp/xrdp_chansrv_%8.8x_main_term", pid);
   if (g_file_exist(text))
   {
     g_file_delete(text);
   }
-  g_snprintf(text, 255, "/tmp/xrdp_chansrv_%8.8x_thread_done", pid);
+  g_snprintf(text, 255, "/tmp/.xrdp/xrdp_chansrv_%8.8x_thread_done", pid);
   if (g_file_exist(text))
   {
     g_file_delete(text);
@@ -80,11 +80,13 @@ main(int argc, char** argv)
   int lerror = 0;
   char exe_path[262];
 
+  g_init("xrdp-sessvc");
   g_memset(exe_path,0,sizeof(exe_path));
 
   if (argc < 3)
   {
     g_writeln("xrdp-sessvc: exiting, not enough parameters");
+    g_deinit();
     return 1;
   }
   g_signal_kill(term_signal_handler); /* SIGKILL */
@@ -100,6 +102,7 @@ main(int argc, char** argv)
   if (chansrv_pid == -1)
   {
     g_writeln("xrdp-sessvc: fork error");
+    g_deinit();
     return 1;
   }
   else if (chansrv_pid == 0) /* child */
@@ -109,6 +112,7 @@ main(int argc, char** argv)
     g_execlp3(exe_path, "xrdp-chansrv", 0);
     /* should not get here */
     g_writeln("xrdp-sessvc: g_execlp3() failed");
+    g_deinit();
     return 1;
   }
   lerror = 0;
@@ -145,5 +149,6 @@ main(int argc, char** argv)
     g_sleep(1);
   }
   g_writeln("xrdp-sessvc: clean exit");
+  g_deinit();
   return 0;
 }
