@@ -38,6 +38,7 @@ xrdp_channel_get_item(struct xrdp_channel* self, int channel_id)
 
   channel = (struct mcs_channel_item*)
                list_get_item(self->mcs_layer->channel_list, channel_id);
+  DEBUG(("xrdp_channel_get_item %8.8x name %s", channel->flags, channel->name));
   return channel;
 }
 

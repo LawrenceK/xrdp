@@ -704,6 +704,8 @@ libxrdp_get_channel_id(struct xrdp_session* session, char* name)
     {
       if (g_strcasecmp(name, channel_item->name) == 0)
       {
+        DEBUG(("libxrdp_get_channel_id %8.8x name %s", 
+              channel_item->flags, channel_item->name));
         return index;
       }
     }

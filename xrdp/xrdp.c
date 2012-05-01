@@ -270,6 +270,10 @@ main(int argc, char** argv)
 {
   int test;
   int host_be;
+  for (test=0;test<argc; test++)
+  {
+    DEBUG(("Argument %i - %s",test,argv[test]));
+  }
 #if defined(_WIN32)
   WSADATA w;
   SC_HANDLE sc_man;
