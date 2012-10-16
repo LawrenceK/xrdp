@@ -43,6 +43,7 @@ xrdp_cache_create(struct xrdp_wm* owner,
   self->bitmap_cache_persist_enable = client_info->bitmap_cache_persist_enable;
   self->bitmap_cache_version = client_info->bitmap_cache_version;
   self->pointer_cache_entries = client_info->pointer_cache_entries;
+  self->xrdp_os_del_list = list_create();
   return self;
 }
 
@@ -73,6 +74,13 @@ xrdp_cache_delete(struct xrdp_cache* self)
       g_free(self->char_items[i][j].font_item.data);
     }
   }
+  /* free all the off screen bitmaps */
+  for (i = 0; i < 2000; i++)
+  {
+    xrdp_bitmap_delete(self->os_bitmap_items[i].bitmap);
+  }
+  list_delete(self->xrdp_os_del_list);
+
   g_free(self);
 }
 
@@ -126,7 +134,8 @@ xrdp_cache_reset(struct xrdp_cache* self,
 /*****************************************************************************/
 /* returns cache id */
 int APP_CC
-xrdp_cache_add_bitmap(struct xrdp_cache* self, struct xrdp_bitmap* bitmap)
+xrdp_cache_add_bitmap(struct xrdp_cache* self, struct xrdp_bitmap* bitmap,
+                      int hints)
 {
   int i = 0;
   int j = 0;
@@ -252,34 +261,45 @@ xrdp_cache_add_bitmap(struct xrdp_cache* self, struct xrdp_bitmap* bitmap)
   xrdp_bitmap_delete(self->bitmap_items[cache_id][cache_idx].bitmap);
   self->bitmap_items[cache_id][cache_idx].bitmap = bitmap;
   self->bitmap_items[cache_id][cache_idx].stamp = self->bitmap_stamp;
-  if (self->bitmap_cache_version == 0) /* orginal version */
+  if (self->use_bitmap_comp)
   {
-    if (self->use_bitmap_comp)
+    if (self->bitmap_cache_version & 4)
+    {
+      if (libxrdp_orders_send_bitmap3(self->session, bitmap->width,
+                                      bitmap->height, bitmap->bpp,
+                                      bitmap->data, cache_id, cache_idx,
+                                      hints) == 0)
+      {
+        return MAKELONG(cache_idx, cache_id);
+      }
+    }
+    if (self->bitmap_cache_version & 2)
+    {
+      libxrdp_orders_send_bitmap2(self->session, bitmap->width,
+                                  bitmap->height, bitmap->bpp,
+                                  bitmap->data, cache_id, cache_idx,
+                                  hints);
+    }
+    else if (self->bitmap_cache_version & 1)
     {
       libxrdp_orders_send_bitmap(self->session, bitmap->width,
                                  bitmap->height, bitmap->bpp,
                                  bitmap->data, cache_id, cache_idx);
     }
-    else
-    {
-      libxrdp_orders_send_raw_bitmap(self->session, bitmap->width,
-                                     bitmap->height, bitmap->bpp,
-                                     bitmap->data, cache_id, cache_idx);
-    }
   }
   else
   {
-    if (self->use_bitmap_comp)
-    {
-      libxrdp_orders_send_bitmap2(self->session, bitmap->width,
-                                  bitmap->height, bitmap->bpp,
-                                  bitmap->data, cache_id, cache_idx);
-    }
-    else
+    if (self->bitmap_cache_version & 2)
     {
       libxrdp_orders_send_raw_bitmap2(self->session, bitmap->width,
                                       bitmap->height, bitmap->bpp,
                                       bitmap->data, cache_id, cache_idx);
+    }
+    else if (self->bitmap_cache_version & 1)
+    {
+      libxrdp_orders_send_raw_bitmap(self->session, bitmap->width,
+                                     bitmap->height, bitmap->bpp,
+                                     bitmap->data, cache_id, cache_idx);
     }
   }
   return MAKELONG(cache_idx, cache_id);
@@ -531,4 +551,61 @@ xrdp_cache_add_brush(struct xrdp_cache* self,
                             self->brush_items[index].pattern, index);
   DEBUG(("adding brush at %d", index));
   return index;
+}
+
+/*****************************************************************************/
+/* returns error */
+int APP_CC
+xrdp_cache_add_os_bitmap(struct xrdp_cache* self, struct xrdp_bitmap* bitmap,
+                         int rdpindex)
+{
+  struct xrdp_os_bitmap_item* bi;
+
+  if ((rdpindex < 0) || (rdpindex >= 2000))
+  {
+    return 1;
+  }
+  bi = self->os_bitmap_items + rdpindex;
+  bi->bitmap = bitmap;
+  return 0;
+}
+
+/*****************************************************************************/
+/* returns error */
+int APP_CC
+xrdp_cache_remove_os_bitmap(struct xrdp_cache* self, int rdpindex)
+{
+  struct xrdp_os_bitmap_item* bi;
+  int index;
+
+  if ((rdpindex < 0) || (rdpindex >= 2000))
+  {
+    return 1;
+  }
+  bi = self->os_bitmap_items + rdpindex;
+  if (bi->bitmap->tab_stop)
+  {
+    index = list_index_of(self->xrdp_os_del_list, rdpindex);
+    if (index == -1)
+    {
+      list_add_item(self->xrdp_os_del_list, rdpindex);
+    }
+  }
+  xrdp_bitmap_delete(bi->bitmap);
+  g_memset(bi, 0, sizeof(struct xrdp_os_bitmap_item));
+  return 0;
+}
+
+/*****************************************************************************/
+struct xrdp_os_bitmap_item* APP_CC
+xrdp_cache_get_os_bitmap(struct xrdp_cache* self, int rdpindex)
+{
+  struct xrdp_os_bitmap_item* bi;
+
+  if ((rdpindex < 0) || (rdpindex >= 2000))
+  {
+    return 0;
+  }
+  bi = self->os_bitmap_items + rdpindex;
+  return bi;
 }

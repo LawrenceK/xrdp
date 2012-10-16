@@ -19,6 +19,7 @@
 
 #include "xrdp-freerdp.h"
 #include "xrdp-color.h"
+#include "xrdp_rail.h"
 
 #define LOG_LEVEL 1
 #define LLOG(_level, _args) \
@@ -69,6 +70,65 @@ lxrdp_connect(struct mod* mod)
 
   if (!ok)
   {
+    LLOGLN(0, ("Failure to connect"));
+#ifdef ERRORSTART
+    if (connectErrorCode != 0)
+    {
+      char buf[128];
+
+      if (connectErrorCode < ERRORSTART)
+      {
+        if (strerror_r(connectErrorCode, buf, 128) != 0)
+        {
+          snprintf(buf, 128, "Errorcode from connect : %d", connectErrorCode);
+        }
+      }
+      else
+      {
+        switch (connectErrorCode)
+        {
+          case PREECONNECTERROR:
+            snprintf(buf, 128, "The error code from connect is "
+                     "PREECONNECTERROR");
+            break;
+          case UNDEFINEDCONNECTERROR:
+            snprintf(buf, 128, "The error code from connect is "
+                     "UNDEFINEDCONNECTERROR");
+            break;
+          case POSTCONNECTERROR:
+            snprintf(buf, 128, "The error code from connect is "
+                     "POSTCONNECTERROR");
+            break;
+          case DNSERROR:
+            snprintf(buf, 128, "The DNS system generated an error");
+            break;
+          case DNSNAMENOTFOUND:
+            snprintf(buf, 128, "The DNS system could not find the "
+                     "specified name");
+            break;
+          case CONNECTERROR:
+            snprintf(buf, 128, "A general connect error was returned");
+            break;
+          case MCSCONNECTINITIALERROR:
+            snprintf(buf, 128, "The error code from connect is "
+                     "MCSCONNECTINITIALERROR");
+            break;
+          case TLSCONNECTERROR:
+            snprintf(buf, 128, "Error in TLS handshake");
+            break;
+          case AUTHENTICATIONERROR:
+            snprintf(buf, 128, "Authentication error check your password "
+                     "and username");
+            break;
+          default:
+            snprintf(buf, 128, "Unhandled Errorcode from connect : %d",
+                     connectErrorCode);
+            break;
+        }
+      }
+      mod->server_msg(mod, buf, 0);
+    }
+#endif
     return 1;
   }
   return 0;
@@ -97,6 +157,10 @@ lxrdp_event(struct mod* mod, int msg, long param1, long param2,
       break;
     case 16: /* key up */
       mod->inst->input->KeyboardEvent(mod->inst->input, param4, param3);
+      break;
+    case 17: /*Synchronize*/
+      LLOGLN(0, ("Synchronized event handled"));
+      mod->inst->input->SynchronizeEvent(mod->inst->input, 0);
       break;
     case 100: /* mouse move */
       LLOGLN(10, ("mouse move %d %d", param1, param2));
@@ -157,6 +221,49 @@ lxrdp_event(struct mod* mod, int msg, long param1, long param2,
       mod->inst->input->MouseEvent(mod->inst->input, flags, 0, 0);
     case 110:
       break;
+    case 200:
+      LLOGLN(10, ("Invalidate request sent from client"));
+      RECTANGLE_16 *rectangle = (RECTANGLE_16 *) g_malloc(sizeof(RECTANGLE_16), 0);
+      /* The parameters are coded as follows param1 = MAKELONG(y, x), param2 =MAKELONG(h, w)
+       * #define MAKELONG(lo, hi) ((((hi) & 0xffff) << 16) | ((lo) & 0xffff))
+       */
+      rectangle->left = (param1 >> 16) & 0xffff;
+      rectangle->top = param1 & 0xffff;
+      rectangle->right = (((param2 >> 16) & 0xffff) + rectangle->left) - 1;
+      rectangle->bottom = ((param2 & 0xffff) + rectangle->top) - 1;
+      if (mod->inst->settings->refresh_rect)
+      {
+        if (mod->inst->update != NULL)
+        {
+          if (mod->inst->update->RefreshRect != NULL)
+          {
+            if (mod->inst->context != NULL)
+            {
+              LLOGLN(0, ("update rectangle left: %d top: %d bottom: %d right: %d",
+                rectangle->left, rectangle->top, rectangle->bottom, rectangle->right));
+              mod->inst->update->RefreshRect(mod->inst->context, 1, rectangle);
+            }
+            else
+            {
+              LLOGLN(0, ("Invalidate request -The context is null"));
+            }
+          }
+          else
+          {
+            LLOGLN(0, ("Invalidate request - RefreshRect is Null"));
+          }
+        }
+        else
+        {
+          LLOGLN(0, ("Invalidate request -the update pointer is null"));
+        }
+      }
+      else
+      {
+        LLOGLN(0, ("Invalidate request - warning - update rectangle is disabled"));
+      }
+      g_free(rectangle);
+      break;
     case 0x5555:
       chanid = LOWORD(param1);
       flags = HIWORD(param1);
@@ -173,13 +280,14 @@ lxrdp_event(struct mod* mod, int msg, long param1, long param2,
       switch (flags & 3)
       {
         case 3:
-          mod->inst->SendChannelData(mod->inst, lchid, data, total_size);
+          mod->inst->SendChannelData(mod->inst, lchid, (tui8*)data, total_size);
           break;
         case 2:
           /* end */
           g_memcpy(mod->chan_buf + mod->chan_buf_valid, data, size);
           mod->chan_buf_valid += size;
-          mod->inst->SendChannelData(mod->inst, lchid, mod->chan_buf, total_size);
+          mod->inst->SendChannelData(mod->inst, lchid, (tui8*)(mod->chan_buf),
+                                     total_size);
           g_free(mod->chan_buf);
           mod->chan_buf = 0;
           mod->chan_buf_bytes = 0;
@@ -200,6 +308,9 @@ lxrdp_event(struct mod* mod, int msg, long param1, long param2,
           mod->chan_buf_valid += size;
           break;
       }
+      break;
+    default:
+      LLOGLN(0, ("Unhandled message type in eventhandler %d", msg));
       break;
   }
   return 0;
@@ -279,6 +390,12 @@ lxrdp_set_param(struct mod* mod, char* name, char* value)
   else if (g_strcmp(name, "password") == 0)
   {
     g_strncpy(mod->password, value, 255);
+  }
+  else if (g_strcmp(name, "client_info") == 0)
+  {
+    g_memcpy(&(mod->client_info), value, sizeof(mod->client_info));
+    /* This is a Struct and cannot be printed in next else*/
+    LLOGLN(10, ("Client_info struct ignored"));
   }
   else
   {
@@ -395,10 +512,10 @@ lfreerdp_bitmap_update(rdpContext* context, BITMAP_UPDATE* bitmap)
   int j;
   int line_bytes;
   BITMAP_DATA* bd;
-  tui8* dst_data;
-  tui8* dst_data1;
-  tui8* src;
-  tui8* dst;
+  char* dst_data;
+  char* dst_data1;
+  char* src;
+  char* dst;
 
   mod = ((struct mod_context*)context)->modi;
   LLOGLN(10, ("lfreerdp_bitmap_update: %d %d", bitmap->number, bitmap->count));
@@ -413,15 +530,15 @@ lfreerdp_bitmap_update(rdpContext* context, BITMAP_UPDATE* bitmap)
     cx = (bd->destRight - bd->destLeft) + 1;
     cy = (bd->destBottom - bd->destTop) + 1;
     line_bytes = server_Bpp * bd->width;
-    dst_data = (tui8*)g_malloc(bd->height * line_bytes + 16, 0);
+    dst_data = (char*)g_malloc(bd->height * line_bytes + 16, 0);
     if (bd->compressed)
     {
-      bitmap_decompress(bd->bitmapDataStream, dst_data, bd->width,
+      bitmap_decompress(bd->bitmapDataStream, (tui8*)dst_data, bd->width,
                         bd->height, bd->bitmapLength, server_bpp, server_bpp);
     }
     else
     { /* bitmap is upside down */
-      src = bd->bitmapDataStream;
+      src = (char*)(bd->bitmapDataStream);
       dst = dst_data + bd->height * line_bytes;
       for (j = 0; j < bd->height; j++)
       {
@@ -500,7 +617,8 @@ lfreerdp_pat_blt(rdpContext* context, PATBLT_ORDER* patblt)
   else
   {
     mod->server_set_brush(mod, patblt->brush.x, patblt->brush.y,
-                          patblt->brush.style, patblt->brush.p8x8);
+                          patblt->brush.style,
+                          (char*)(patblt->brush.p8x8));
   }
   mod->server_fill_rect(mod, patblt->nLeftRect, patblt->nTopRect,
                         patblt->nWidth, patblt->nHeight);
@@ -614,7 +732,7 @@ lfreerdp_glyph_index(rdpContext* context, GLYPH_INDEX_ORDER* glyph_index)
       glyph_index->opLeft, glyph_index->opTop,
       glyph_index->opRight, glyph_index->opBottom,
       glyph_index->x, glyph_index->y,
-      glyph_index->data, glyph_index->cbData);
+      (char*)(glyph_index->data), glyph_index->cbData);
 }
 
 /******************************************************************************/
@@ -649,6 +767,32 @@ static void DEFAULT_CC
 lfreerdp_cache_bitmap(rdpContext* context, CACHE_BITMAP_ORDER* cache_bitmap_order)
 {
   LLOGLN(10, ("lfreerdp_cache_bitmap:"));
+}
+
+/******************************************************************************/
+/* Turn the bitmap upside down*/
+static void DEFAULT_CC
+lfreerdp_upsidedown(uint8* destination, CACHE_BITMAP_V2_ORDER* cache_bitmap_v2_order, int server_Bpp)
+{
+  tui8* src;
+  tui8* dst;
+  int line_bytes;
+  int j;
+
+  if (destination == NULL)
+  {
+    LLOGLN(0, ("lfreerdp_upsidedown: destination pointer is NULL !!!"));
+    return;
+  }
+  line_bytes = server_Bpp * cache_bitmap_v2_order->bitmapWidth;
+  src = cache_bitmap_v2_order->bitmapDataStream;
+  dst = destination + ((cache_bitmap_v2_order->bitmapHeight) * line_bytes);
+  for (j = 0; j < cache_bitmap_v2_order->bitmapHeight; j++)
+  {
+    dst -= line_bytes;
+    g_memcpy(dst, src, line_bytes);
+    src += line_bytes;
+  }
 }
 
 /******************************************************************************/
@@ -705,14 +849,15 @@ lfreerdp_cache_bitmapV2(rdpContext* context,
   if (cache_bitmap_v2_order->compressed)
   {
     bitmap_decompress(cache_bitmap_v2_order->bitmapDataStream,
-                      dst_data, width, height,
+                      (tui8*)dst_data, width, height,
                       cache_bitmap_v2_order->bitmapLength,
                       server_bpp, server_bpp);
   }
   else
   {
-    g_memcpy(dst_data, cache_bitmap_v2_order->bitmapDataStream,
-             width * height * server_Bpp);
+    /* Uncompressed bitmaps are upside down */
+    lfreerdp_upsidedown((tui8*)dst_data, cache_bitmap_v2_order, server_Bpp);
+    LLOGLN(10, ("lfreerdp_cache_bitmapV2:  upside down progressed"));
   }
   dst_data1 = convert_bitmap(server_bpp, client_bpp, dst_data,
                              width, height, mod->colormap);
@@ -742,7 +887,7 @@ lfreerdp_cache_glyph(rdpContext* context, CACHE_GLYPH_ORDER* cache_glyph_order)
     LLOGLN(10, ("  %d %d %d %d %d", gd->cacheIndex, gd->x, gd->y,
            gd->cx, gd->cy));
     mod->server_add_char(mod, cache_glyph_order->cacheId, gd->cacheIndex,
-                         gd->x, gd->y, gd->cx, gd->cy, gd->aj);
+                         gd->x, gd->y, gd->cx, gd->cy, (char*)(gd->aj));
     xfree(gd->aj);
     gd->aj = 0;
     xfree(gd);
@@ -821,7 +966,7 @@ static void DEFAULT_CC
 lfreerdp_pointer_system(rdpContext* context,
                         POINTER_SYSTEM_UPDATE* pointer_system)
 {
-  LLOGLN(0, ("lfreerdp_pointer_system:"));
+  LLOGLN(0, ("lfreerdp_pointer_system: - no code here"));
 }
 
 /******************************************************************************/
@@ -948,14 +1093,14 @@ lfreerdp_pointer_new(rdpContext* context,
     mod->pointer_cache[index].hotx = pointer_new->colorPtrAttr.xPos;
     mod->pointer_cache[index].hoty = pointer_new->colorPtrAttr.yPos;
 
-    dst = mod->pointer_cache[index].data;
+    dst = (tui8*)(mod->pointer_cache[index].data);
     dst += 32 * 32 * 3 - 32 * 3;
     src = pointer_new->colorPtrAttr.xorMaskData;
     lfreerdp_convert_color_image(dst, 32, 32, 24, 32 * -3,
                                  src, 32, 32, 1, 32 / 8);
 
-    dst = mod->pointer_cache[index].mask;
-    dst += 32 * 32 / 8 - 32 / 8;
+    dst = (tui8*)(mod->pointer_cache[index].mask);
+    dst +=( 32 * 32 / 8) - (32 / 8);
     src = pointer_new->colorPtrAttr.andMaskData;
     lfreerdp_convert_color_image(dst, 32, 32, 1, 32 / -8,
                                  src, 32, 32, 1, 32 / 8);
@@ -989,7 +1134,7 @@ lfreerdp_pointer_cached(rdpContext* context,
   struct mod* mod;
   int index;
 
-  LLOGLN(0, ("lfreerdp_pointer_cached:"));
+  LLOGLN(10, ("lfreerdp_pointer_cached:"));
   mod = ((struct mod_context*)context)->modi;
   index = pointer_cached->cacheIndex;
   mod->server_set_cursor(mod, mod->pointer_cache[index].hotx,
@@ -1064,6 +1209,14 @@ lfreerdp_pre_connect(freerdp* instance)
   instance->settings->username = g_strdup(mod->username);
   instance->settings->password = g_strdup(mod->password);
 
+  if (mod->client_info.rail_support_level > 0)
+  {
+    instance->settings->remote_app = true;
+    instance->settings->rail_langbar_supported = true;
+    instance->settings->workarea = true;
+    instance->settings->performance_flags = PERF_DISABLE_WALLPAPER | PERF_DISABLE_FULLWINDOWDRAG;
+  }
+
   // here
   //instance->settings->rdp_version = 4;
 
@@ -1104,6 +1257,263 @@ lfreerdp_pre_connect(freerdp* instance)
   return true;
 }
 
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_WindowCreate(rdpContext* context, WINDOW_ORDER_INFO* orderInfo,
+                   WINDOW_STATE_ORDER* window_state)
+{
+  int index;
+  struct mod* mod;
+  struct rail_window_state_order wso;
+  UNICONV* uniconv;
+
+  LLOGLN(0, ("llrail_WindowCreate:"));
+  uniconv = freerdp_uniconv_new();
+  mod = ((struct mod_context*)context)->modi;
+  memset(&wso, 0, sizeof(wso));
+  /* copy the window state order */
+  wso.owner_window_id = window_state->ownerWindowId;
+  wso.style = window_state->style;
+  wso.extended_style = window_state->extendedStyle;
+  wso.show_state = window_state->showState;
+  if (orderInfo->fieldFlags & WINDOW_ORDER_FIELD_TITLE)
+  {
+    wso.title_info = freerdp_uniconv_in(uniconv,
+        window_state->titleInfo.string, window_state->titleInfo.length);
+  }
+  LLOGLN(0, ("lrail_WindowCreate: %s", wso.title_info));
+  wso.client_offset_x = window_state->clientOffsetX;
+  wso.client_offset_y = window_state->clientOffsetY;
+  wso.client_area_width = window_state->clientAreaWidth;
+  wso.client_area_height = window_state->clientAreaHeight;
+  wso.rp_content = window_state->RPContent;
+  wso.root_parent_handle = window_state->rootParentHandle;
+  wso.window_offset_x = window_state->windowOffsetX;
+  wso.window_offset_y = window_state->windowOffsetY;
+  wso.window_client_delta_x = window_state->windowClientDeltaX;
+  wso.window_client_delta_y = window_state->windowClientDeltaY;
+  wso.window_width = window_state->windowWidth;
+  wso.window_height = window_state->windowHeight;
+  wso.num_window_rects = window_state->numWindowRects;
+  if (orderInfo->fieldFlags & WINDOW_ORDER_FIELD_WND_RECTS)
+  {
+    wso.window_rects = (struct rail_window_rect*)
+        g_malloc(sizeof(struct rail_window_rect) * wso.num_window_rects, 0);
+    for (index = 0; index < wso.num_window_rects; index++)
+    {
+      wso.window_rects[index].left = window_state->windowRects[index].left;
+      wso.window_rects[index].top = window_state->windowRects[index].top;
+      wso.window_rects[index].right = window_state->windowRects[index].right;
+      wso.window_rects[index].bottom = window_state->windowRects[index].bottom;
+    }
+  }
+  wso.visible_offset_x = window_state->visibleOffsetX;
+  wso.visible_offset_y = window_state->visibleOffsetY;
+  wso.num_visibility_rects = window_state->numVisibilityRects;
+  if (orderInfo->fieldFlags & WINDOW_ORDER_FIELD_VISIBILITY)
+  {
+    wso.visibility_rects = (struct rail_window_rect*)
+        g_malloc(sizeof(struct rail_window_rect) * wso.num_visibility_rects, 0);
+    for (index = 0; index < wso.num_visibility_rects; index++)
+    {
+      wso.visibility_rects[index].left = window_state->visibilityRects[index].left;
+      wso.visibility_rects[index].top = window_state->visibilityRects[index].top;
+      wso.visibility_rects[index].right = window_state->visibilityRects[index].right;
+      wso.visibility_rects[index].bottom = window_state->visibilityRects[index].bottom;
+    }
+  }
+
+  mod->server_window_new_update(mod, orderInfo->windowId, &wso,
+                                orderInfo->fieldFlags);
+
+  xfree(wso.title_info);
+  g_free(wso.window_rects);
+  g_free(wso.visibility_rects);
+  freerdp_uniconv_free(uniconv);
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_WindowUpdate(rdpContext* context, WINDOW_ORDER_INFO* orderInfo,
+                   WINDOW_STATE_ORDER* window_state)
+{
+  LLOGLN(0, ("lrail_WindowUpdate:"));
+  lrail_WindowCreate(context, orderInfo, window_state);
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_WindowDelete(rdpContext* context, WINDOW_ORDER_INFO* orderInfo)
+{
+  struct mod* mod;
+
+  LLOGLN(0, ("lrail_WindowDelete:"));
+  mod = ((struct mod_context*)context)->modi;
+  mod->server_window_delete(mod, orderInfo->windowId);
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_WindowIcon(rdpContext* context, WINDOW_ORDER_INFO* orderInfo,
+                 WINDOW_ICON_ORDER* window_icon)
+{
+  struct mod* mod;
+  struct rail_icon_info rii;
+
+  LLOGLN(0, ("lrail_WindowIcon:"));
+  mod = ((struct mod_context*)context)->modi;
+  memset(&rii, 0, sizeof(rii));
+  rii.bpp = window_icon->iconInfo->bpp;
+  rii.width = window_icon->iconInfo->width;
+  rii.height = window_icon->iconInfo->height;
+  rii.cmap_bytes = window_icon->iconInfo->cbColorTable;
+  rii.mask_bytes = window_icon->iconInfo->cbBitsMask;
+  rii.data_bytes = window_icon->iconInfo->cbBitsColor;
+  rii.mask = (char*)(window_icon->iconInfo->bitsMask);
+  rii.cmap = (char*)(window_icon->iconInfo->colorTable);
+  rii.data = (char*)(window_icon->iconInfo->bitsColor);
+  mod->server_window_icon(mod, orderInfo->windowId,
+                          window_icon->iconInfo->cacheEntry,
+                          window_icon->iconInfo->cacheId, &rii,
+                          orderInfo->fieldFlags);
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_WindowCachedIcon(rdpContext* context, WINDOW_ORDER_INFO* orderInfo,
+                       WINDOW_CACHED_ICON_ORDER* window_cached_icon)
+{
+  struct mod* mod;
+
+  LLOGLN(0, ("lrail_WindowCachedIcon:"));
+  mod = ((struct mod_context*)context)->modi;
+  mod->server_window_cached_icon(mod, orderInfo->windowId,
+                                 window_cached_icon->cachedIcon.cacheEntry,
+                                 window_cached_icon->cachedIcon.cacheId,
+                                 orderInfo->fieldFlags);
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_NotifyIconCreate(rdpContext* context, WINDOW_ORDER_INFO* orderInfo,
+                       NOTIFY_ICON_STATE_ORDER* notify_icon_state)
+{
+  struct mod* mod;
+  struct rail_notify_state_order rnso;
+  UNICONV* uniconv;
+
+
+  LLOGLN(0, ("lrail_NotifyIconCreate:"));
+  uniconv = freerdp_uniconv_new();
+
+  mod = ((struct mod_context*)context)->modi;
+
+  memset(&rnso, 0, sizeof(rnso));
+  rnso.version = notify_icon_state->version;
+  if (orderInfo->fieldFlags & WINDOW_ORDER_FIELD_NOTIFY_TIP)
+  {
+    rnso.tool_tip = freerdp_uniconv_in(uniconv,
+        notify_icon_state->toolTip.string, notify_icon_state->toolTip.length);
+  }
+  if (orderInfo->fieldFlags & WINDOW_ORDER_FIELD_NOTIFY_INFO_TIP)
+  {
+    rnso.infotip.timeout = notify_icon_state->infoTip.timeout;
+    rnso.infotip.flags = notify_icon_state->infoTip.flags;
+    rnso.infotip.text = freerdp_uniconv_in(uniconv,
+        notify_icon_state->infoTip.text.string,
+        notify_icon_state->infoTip.text.length);
+    rnso.infotip.title = freerdp_uniconv_in(uniconv,
+        notify_icon_state->infoTip.title.string,
+        notify_icon_state->infoTip.title.length);
+  }
+  rnso.state = notify_icon_state->state;
+  rnso.icon_cache_entry = notify_icon_state->icon.cacheEntry;
+  rnso.icon_cache_id = notify_icon_state->icon.cacheId;
+
+  rnso.icon_info.bpp = notify_icon_state->icon.bpp;
+  rnso.icon_info.width = notify_icon_state->icon.width;
+  rnso.icon_info.height = notify_icon_state->icon.height;
+  rnso.icon_info.cmap_bytes = notify_icon_state->icon.cbColorTable;
+  rnso.icon_info.mask_bytes = notify_icon_state->icon.cbBitsMask;
+  rnso.icon_info.data_bytes = notify_icon_state->icon.cbBitsColor;
+  rnso.icon_info.mask = (char*)(notify_icon_state->icon.bitsMask);
+  rnso.icon_info.cmap = (char*)(notify_icon_state->icon.colorTable);
+  rnso.icon_info.data = (char*)(notify_icon_state->icon.bitsColor);
+
+  mod->server_notify_new_update(mod, orderInfo->windowId,
+                                orderInfo->notifyIconId,
+                                &rnso, orderInfo->fieldFlags);
+
+  xfree(rnso.tool_tip);
+  xfree(rnso.infotip.text);
+  xfree(rnso.infotip.title);
+  freerdp_uniconv_free(uniconv);
+
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_NotifyIconUpdate(rdpContext* context, WINDOW_ORDER_INFO* orderInfo,
+                       NOTIFY_ICON_STATE_ORDER* notify_icon_state)
+{
+  LLOGLN(0, ("lrail_NotifyIconUpdate:"));
+  lrail_NotifyIconCreate(context, orderInfo, notify_icon_state);
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_NotifyIconDelete(rdpContext* context, WINDOW_ORDER_INFO* orderInfo)
+{
+  struct mod* mod;
+
+  LLOGLN(0, ("lrail_NotifyIconDelete:"));
+  mod = ((struct mod_context*)context)->modi;
+  mod->server_notify_delete(mod, orderInfo->windowId,
+                            orderInfo->notifyIconId);
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_MonitoredDesktop(rdpContext* context, WINDOW_ORDER_INFO* orderInfo,
+                       MONITORED_DESKTOP_ORDER* monitored_desktop)
+{
+  int index;
+  struct mod* mod;
+  struct rail_monitored_desktop_order rmdo;
+
+  LLOGLN(0, ("lrail_MonitoredDesktop:"));
+  mod = ((struct mod_context*)context)->modi;
+  memset(&rmdo, 0, sizeof(rmdo));
+  rmdo.active_window_id = monitored_desktop->activeWindowId;
+  rmdo.num_window_ids = monitored_desktop->numWindowIds;
+  if (orderInfo->fieldFlags & WINDOW_ORDER_FIELD_DESKTOP_ZORDER)
+  {
+    if (rmdo.num_window_ids > 0)
+    {
+      rmdo.window_ids = (int*)g_malloc(sizeof(int) * rmdo.num_window_ids, 0);
+      for (index = 0; index < rmdo.num_window_ids; index++)
+      {
+        rmdo.window_ids[index] = monitored_desktop->windowIds[index];
+      }
+    }
+  }
+  mod->server_monitored_desktop(mod, &rmdo, orderInfo->fieldFlags);
+  g_free(rmdo.window_ids);
+}
+
+/*****************************************************************************/
+void DEFAULT_CC
+lrail_NonMonitoredDesktop(rdpContext* context, WINDOW_ORDER_INFO* orderInfo)
+{
+  struct mod* mod;
+  struct rail_monitored_desktop_order rmdo;
+
+  LLOGLN(0, ("lrail_NonMonitoredDesktop:"));
+  mod = ((struct mod_context*)context)->modi;
+  memset(&rmdo, 0, sizeof(rmdo));
+  mod->server_monitored_desktop(mod, &rmdo, orderInfo->fieldFlags);
+}
+
 /******************************************************************************/
 static boolean  DEFAULT_CC
 lfreerdp_post_connect(freerdp* instance)
@@ -1113,6 +1523,18 @@ lfreerdp_post_connect(freerdp* instance)
   LLOGLN(0, ("lfreerdp_post_connect:"));
   mod = ((struct mod_context*)(instance->context))->modi;
   g_memset(mod->password, 0, sizeof(mod->password));
+
+  mod->inst->update->window->WindowCreate = lrail_WindowCreate;
+  mod->inst->update->window->WindowUpdate = lrail_WindowUpdate;
+  mod->inst->update->window->WindowDelete = lrail_WindowDelete;
+  mod->inst->update->window->WindowIcon = lrail_WindowIcon;
+  mod->inst->update->window->WindowCachedIcon = lrail_WindowCachedIcon;
+  mod->inst->update->window->NotifyIconCreate = lrail_NotifyIconCreate;
+  mod->inst->update->window->NotifyIconUpdate = lrail_NotifyIconUpdate;
+  mod->inst->update->window->NotifyIconDelete = lrail_NotifyIconDelete;
+  mod->inst->update->window->MonitoredDesktop = lrail_MonitoredDesktop;
+  mod->inst->update->window->NonMonitoredDesktop = lrail_NonMonitoredDesktop;
+
   return true;
 }
 
@@ -1153,7 +1575,7 @@ lfreerdp_receive_channel_data(freerdp* instance, int channelId, uint8* data,
   if (lchid >= 0)
   {
     LLOGLN(10, ("lfreerdp_receive_channel_data: server to client"));
-    error = mod->server_send_to_channel(mod, lchid, data, size,
+    error = mod->server_send_to_channel(mod, lchid, (char*)data, size,
                                         total_size, flags);
     if (error != 0)
     {
@@ -1238,7 +1660,13 @@ mod_exit(struct mod* mod)
   {
     return 0;
   }
-
+  if (mod->inst == NULL)
+  {
+    LLOGLN(0, ("mod_exit - null pointer for inst:"));
+    g_free(mod);
+    return 0 ;
+  }
+  freerdp_disconnect(mod->inst);
   if ((mod->vmaj == 1) && (mod->vmin == 0) && (mod->vrev == 1))
   {
     /* this version has a bug with double free in freerdp_free */

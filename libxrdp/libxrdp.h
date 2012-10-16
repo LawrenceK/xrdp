@@ -37,6 +37,7 @@
 #include "file.h"
 #include "libxrdpinc.h"
 #include "file_loc.h"
+#include "xrdp_client_info.h"
 
 /* tcp */
 struct xrdp_tcp
@@ -117,6 +118,8 @@ struct xrdp_rdp
   int share_id;
   int mcs_channel;
   struct xrdp_client_info client_info;
+  void* mppc_enc;
+  void* rfx_enc;
 };
 
 /* state */
@@ -323,6 +326,8 @@ xrdp_orders_send(struct xrdp_orders* self);
 int APP_CC
 xrdp_orders_force_send(struct xrdp_orders* self);
 int APP_CC
+xrdp_orders_check(struct xrdp_orders* self, int max_size);
+int APP_CC
 xrdp_orders_rect(struct xrdp_orders* self, int x, int y, int cx, int cy,
                  int color, struct xrdp_rect* rect);
 int APP_CC
@@ -381,17 +386,32 @@ xrdp_orders_send_raw_bitmap2(struct xrdp_orders* self,
 int APP_CC
 xrdp_orders_send_bitmap2(struct xrdp_orders* self,
                          int width, int height, int bpp, char* data,
-                         int cache_id, int cache_idx);
+                         int cache_id, int cache_idx, int hints);
+int APP_CC
+xrdp_orders_send_bitmap3(struct xrdp_orders* self,
+                         int width, int height, int bpp, char* data,
+                         int cache_id, int cache_idx, int hints);
 int APP_CC
 xrdp_orders_send_brush(struct xrdp_orders* self, int width, int height,
                        int bpp, int type, int size, char* data, int cache_id);
+int APP_CC
+xrdp_orders_send_create_os_surface(struct xrdp_orders* self, int id,
+                                   int width, int height,
+                                   struct list* del_list);
+int APP_CC
+xrdp_orders_send_switch_os_surface(struct xrdp_orders* self, int id);
 
 /* xrdp_bitmap_compress.c */
 int APP_CC
 xrdp_bitmap_compress(char* in_data, int width, int height,
                      struct stream* s, int bpp, int byte_limit,
-                     int start_line, struct stream* temp,
+                     int start_line, struct stream* temp_s,
                      int e);
+int APP_CC
+xrdp_jpeg_compress(char* in_data, int width, int height,
+                   struct stream* s, int bpp, int byte_limit,
+                   int start_line, struct stream* temp_s,
+                   int e, int quality);
 
 /* xrdp_channel.c */
 struct xrdp_channel* APP_CC

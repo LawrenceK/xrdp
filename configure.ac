@@ -7,6 +7,14 @@ AM_INIT_AUTOMAKE([1.6 foreign])
 AC_PROG_CC
 AC_C_CONST
 AC_PROG_LIBTOOL
+AC_ARG_WITH([systemdsystemunitdir],
+        AS_HELP_STRING([--with-systemdsystemunitdir=DIR], [Directory for systemd service files]),
+        [], [with_systemdsystemunitdir=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)])
+if test "x$with_systemdsystemunitdir" != xno; then
+        AC_SUBST([systemdsystemunitdir], [$with_systemdsystemunitdir])
+fi
+AM_CONDITIONAL(HAVE_SYSTEMD, [test -n "$with_systemdsystemunitdir" -a "x$with_systemdsystemunitdir" != xno ])
+
 AC_ARG_ENABLE(nopam, AS_HELP_STRING([--enable-nopam],
               [Build no PAM support (default: no)]),
               [nopam=true], [nopam=false])
@@ -27,6 +35,16 @@ AC_ARG_ENABLE(freerdp1, AS_HELP_STRING([--enable-freerdp1],
               [Build freerdp1 module (default: no)]),
               [freerdp1=true], [freerdp1=false])
 AM_CONDITIONAL(XRDP_FREERDP1, [test x$freerdp1 = xtrue])
+AC_ARG_ENABLE(jpeg, AS_HELP_STRING([--enable-jpeg],
+              [Build jpeg module (default: no)]),
+              [jpeg=true], [jpeg=false])
+AM_CONDITIONAL(XRDP_JPEG, [test x$jpeg = xtrue])
+AC_ARG_ENABLE(simplesound, AS_HELP_STRING([--enable-simplesound],
+              [Build simple pulse audio interface (default: no)]),
+              [simplesound=true], [simplesound=false])
+AM_CONDITIONAL(XRDP_SIMPLESOUND, [test x$simplesound = xtrue])
+
+AM_CONDITIONAL(GOT_PREFIX, test "x${prefix}" != "xNONE"])
 
 # checking for openssl
 AC_CHECK_HEADER([openssl/rc4.h], [],
@@ -44,6 +62,20 @@ then
 fi
 
 AS_IF( [test "x$enable_freerdp1" = "xyes"] , [PKG_CHECK_MODULES(FREERDP, freerdp >= 1.0.0)] )
+
+# checking for libjpeg
+if ! test -z "$enable_jpeg"
+then
+  AC_CHECK_HEADER([jpeglib.h], [],
+    [AC_MSG_ERROR([please install libjpeg-dev or libjpeg-devel])])
+fi
+
+# checking for libpulse libpulse-simple
+if ! test -z "$enable_simplesound"
+then
+  AC_CHECK_HEADER([pulse/simple.h], [],
+    [AC_MSG_ERROR([please install libpulse-dev or libpulse-devel])])
+fi
 
 # checking for Xlib, Xfixes
 AC_CHECK_HEADER([X11/Xlib.h], [],
@@ -77,6 +109,7 @@ AC_CONFIG_FILES([Makefile
                  instfiles/Makefile
                  instfiles/pam.d/Makefile
                  genkeymap/Makefile
+                 xrdpapi/Makefile
 ])
 #                 fontdump/Makefile
 #                 xrdp/cursors/Makefile

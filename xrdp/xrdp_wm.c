@@ -56,6 +56,8 @@ xrdp_wm_create(struct xrdp_process* owner,
   /* this will use built in keymap or load from file */
   get_keymaps(self->session->client_info->keylayout, &(self->keymap));
   xrdp_wm_set_login_mode(self, 0);
+  self->target_surface = self->screen;
+  self->current_surface_index = 0xffff; /* screen */
   return self;
 }
 
@@ -309,7 +311,7 @@ unsigned int xrdp_wm_htoi (const char *ptr)
 
 /*****************************************************************************/
 int APP_CC
-xrdp_wm_load_static_colors(struct xrdp_wm* self)
+xrdp_wm_load_static_colors_plus(struct xrdp_wm* self, char* autorun_name)
 {
   int bindex;
   int gindex;
@@ -321,6 +323,11 @@ xrdp_wm_load_static_colors(struct xrdp_wm* self)
   struct list* names;
   struct list* values;
   char cfg_file[256];
+
+  if (autorun_name != 0)
+  {
+    autorun_name[0] = 0;
+  }
 
   /* initialize with defaults */
   self->black      = HCOLOR(self->screen->bpp,0x000000);
@@ -394,6 +401,24 @@ xrdp_wm_load_static_colors(struct xrdp_wm* self)
             val = (char*)list_get_item(values, index);
             self->background = HCOLOR(self->screen->bpp,xrdp_wm_htoi(val));
           }
+          else if (g_strcasecmp(val, "autorun") == 0)
+          {
+            val = (char*)list_get_item(values, index);
+            if (autorun_name != 0)
+            {
+              g_strncpy(autorun_name, val, 255);
+            }
+          }
+          else if (g_strcasecmp(val, "hidelogwindow") == 0)
+          {
+            val = (char*)list_get_item(values, index);
+            if ((g_strcasecmp(val, "yes") == 0) ||
+                (g_strcasecmp(val, "1") == 0) ||
+                (g_strcasecmp(val, "true") == 0))
+            {
+              self->hide_log_window = 1;
+            }
+          }
         }
       }
     }
@@ -462,11 +487,12 @@ xrdp_wm_init(struct xrdp_wm* self)
   char* r;
   char section_name[256];
   char cfg_file[256];
+  char autorun_name[256];
 
-  xrdp_wm_load_static_colors(self);
+  xrdp_wm_load_static_colors_plus(self, autorun_name);
   xrdp_wm_load_static_pointers(self);
   self->screen->bg_color = self->background;
-  if (self->session->client_info->osirium_preamble_buffer)
+  if (self->session->client_info->rdp_autologin || (autorun_name[0] != 0))
   {
     char* line_end;
     char* t;
@@ -528,17 +554,25 @@ xrdp_wm_init(struct xrdp_wm* self)
       g_strncpy(section_name, self->session->client_info->domain, 255);
       if (section_name[0] == 0)
       {
-        /* if no doamin is passed, use the first item in the xrdp.ini
-           file thats not named 'globals' */
-        file_read_sections(fd, names);
-        for (index = 0; index < names->count; index++)
+        if (autorun_name[0] == 0)
         {
-          q = (char*)list_get_item(names, index);
-          if (g_strncasecmp("globals", q, 8) != 0)
+          /* if no doamin is passed, and no autorun in xrdp.ini,
+             use the first item in the xrdp.ini
+             file thats not named 'globals' */
+          file_read_sections(fd, names);
+          for (index = 0; index < names->count; index++)
           {
-            g_strncpy(section_name, q, 255);
-            break;
+            q = (char*)list_get_item(names, index);
+            if (g_strncasecmp("globals", q, 8) != 0)
+            {
+              g_strncpy(section_name, q, 255);
+              break;
+            }
           }
+        }
+        else
+        {
+          g_strncpy(section_name, autorun_name, 255);
         }
       }
       list_clear(names);
@@ -1406,21 +1440,25 @@ xrdp_wm_process_channel_data(struct xrdp_wm* self,
                             tbus param3, tbus param4)
 {
   int rv;
-
+  int chanid ;
   rv = 1;
   if (self->mm->mod != 0)
-  {
-    if (self->mm->sesman_controlled)
+  {    
+    chanid = LOWORD(param1);
+    if(is_channel_allowed(self, chanid))
     {
-      rv = xrdp_mm_process_channel_data(self->mm, param1, param2,
-                                        param3, param4);
-    }
-    else
-    {
-      if (self->mm->mod->mod_event != 0)
+      if (self->mm->usechansrv)
       {
-        rv = self->mm->mod->mod_event(self->mm->mod, 0x5555, param1, param2,
+        rv = xrdp_mm_process_channel_data(self->mm, param1, param2,
+                                        param3, param4);
+      }
+      else
+      {
+        if (self->mm->mod->mod_event != 0)
+        {
+          rv = self->mm->mod->mod_event(self->mm->mod, 0x5555, param1, param2,
                                       param3, param4);
+        }
       }
     }
   }
@@ -1492,10 +1530,16 @@ xrdp_wm_login_mode_changed(struct xrdp_wm* self)
   }
   else if (self->login_mode == 2)
   {
-    xrdp_wm_set_login_mode(self, 3); /* put the wm in connected mode */
-    xrdp_wm_delete_all_childs(self);
-    self->dragging = 0;
-    xrdp_mm_connect(self->mm);
+    if (xrdp_mm_connect(self->mm) == 0)
+    {
+      xrdp_wm_set_login_mode(self, 3); /* put the wm in connected mode */
+      xrdp_wm_delete_all_childs(self);
+      self->dragging = 0;
+    }
+    else
+    {
+      /* we do nothing on connect error so far */
+    }
   }
   else if (self->login_mode == 10)
   {
@@ -1565,6 +1609,21 @@ xrdp_wm_log_wnd_notify(struct xrdp_bitmap* wnd,
   return 0;
 }
 
+ void add_string_to_logwindow(char *msg,struct list* log)
+ {
+     
+  char *new_part_message;
+  char *current_pointer = msg ;
+  int processedlen = 0; 
+  do{
+    new_part_message = g_strndup(current_pointer,LOG_WINDOW_CHAR_PER_LINE) ;   
+    g_writeln(new_part_message);
+    list_add_item(log, (long)new_part_message);
+    processedlen = processedlen + g_strlen(new_part_message);
+    current_pointer = current_pointer + g_strlen(new_part_message) ;
+  }while((processedlen<g_strlen(msg)) && (processedlen<DEFAULT_STRING_LEN));
+ }
+
 /*****************************************************************************/
 int APP_CC
 xrdp_wm_log_msg(struct xrdp_wm* self, char* msg)
@@ -1575,7 +1634,11 @@ xrdp_wm_log_msg(struct xrdp_wm* self, char* msg)
   int xoffset;
   int yoffset;
 
-  list_add_item(self->log, (long)g_strdup(msg));
+  if (self->hide_log_window)
+  {
+    return 0;
+  }
+  add_string_to_logwindow(msg,self->log);  
   if (self->log_wnd == 0)
   {
     w = DEFAULT_WND_LOG_W;

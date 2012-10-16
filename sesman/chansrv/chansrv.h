@@ -1,15 +1,41 @@
+/**
+ * xrdp: A Remote Desktop Protocol server.
+ *
+ * Copyright (C) Jay Sorg 2009-2012
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #if !defined(CHANSRV_H)
 #define CHANSRV_H
 
 #include "arch.h"
 #include "parse.h"
+#include "log.h"
+
+struct chan_out_data
+{
+  struct stream* s;
+  struct chan_out_data* next;
+};
 
 struct chan_item
 {
   int id;
   int flags;
   char name[16];
+  struct chan_out_data* head;
+  struct chan_out_data* tail;
 };
 
 int APP_CC
@@ -27,5 +53,26 @@ main_cleanup(void);
     g_writeln _params ; \
   } \
 }
+
+#define LOGM(_args) do { log_message _args ; } while (0)
+
+#ifndef GSET_UINT8
+#define GSET_UINT8(_ptr, _offset, _data) \
+  *((unsigned char*) (((unsigned char*)(_ptr)) + (_offset))) = (unsigned char)(_data)
+#define GGET_UINT8(_ptr, _offset) \
+  (*((unsigned char*) (((unsigned char*)(_ptr)) + (_offset))))
+#define GSET_UINT16(_ptr, _offset, _data) \
+  GSET_UINT8(_ptr, _offset, _data); \
+  GSET_UINT8(_ptr, (_offset) + 1, (_data) >> 8)
+#define GGET_UINT16(_ptr, _offset) \
+  (GGET_UINT8(_ptr, _offset)) | \
+  ((GGET_UINT8(_ptr, (_offset) + 1)) << 8)
+#define GSET_UINT32(_ptr, _offset, _data) \
+  GSET_UINT16(_ptr, _offset, _data); \
+  GSET_UINT16(_ptr, (_offset) + 2, (_data) >> 16)
+#define GGET_UINT32(_ptr, _offset) \
+  (GGET_UINT16(_ptr, _offset)) | \
+  ((GGET_UINT16(_ptr, (_offset) + 2)) << 16)
+#endif
 
 #endif

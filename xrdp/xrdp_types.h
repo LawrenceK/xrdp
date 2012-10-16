@@ -19,7 +19,13 @@
    types
 
 */
+#define DEFAULT_STRING_LEN 255
+#define LOG_WINDOW_CHAR_PER_LINE 60
 
+#include "xrdp_rail.h"
+
+#define MAX_NR_CHANNELS 16
+#define MAX_CHANNEL_NAME 16
 /* lib */
 struct xrdp_mod
 {
@@ -37,7 +43,7 @@ struct xrdp_mod
   int (*mod_get_wait_objs)(struct xrdp_mod* v, tbus* read_objs, int* rcount,
                            tbus* write_objs, int* wcount, int* timeout);
   int (*mod_check_wait_objs)(struct xrdp_mod* v);
-  long mod_dumby[100 - 9]; /* align, 100 minus the number of mod 
+  long mod_dumby[100 - 9]; /* align, 100 minus the number of mod
                               functions above */
   /* server functions */
   int (*server_begin_update)(struct xrdp_mod* v);
@@ -80,7 +86,38 @@ struct xrdp_mod
                                 char* data, int data_len,
                                 int total_data_len, int flags);
   int (*server_bell_trigger)(struct xrdp_mod* v);
-  long server_dumby[100 - 25]; /* align, 100 minus the number of server
+  /* off screen bitmaps */
+  int (*server_create_os_surface)(struct xrdp_mod* v, int rdpindex,
+                                  int width, int height);
+  int (*server_switch_os_surface)(struct xrdp_mod* v, int rdpindex);
+  int (*server_delete_os_surface)(struct xrdp_mod* v, int rdpindex);
+  int (*server_paint_rect_os)(struct xrdp_mod* mod, int x, int y,
+                              int cx, int cy,
+                              int rdpindex, int srcx, int srcy);
+  int (*server_set_hints)(struct xrdp_mod* mod, int hints, int mask);
+  /* rail */
+  int (*server_window_new_update)(struct xrdp_mod* mod, int window_id,
+                                  struct rail_window_state_order* window_state,
+                                  int flags);
+  int (*server_window_delete)(struct xrdp_mod* mod, int window_id);
+  int (*server_window_icon)(struct xrdp_mod* mod,
+                            int window_id, int cache_entry, int cache_id,
+                            struct rail_icon_info* icon_info,
+                            int flags);
+  int (*server_window_cached_icon)(struct xrdp_mod* mod,
+                                   int window_id, int cache_entry,
+                                   int cache_id, int flags);
+  int (*server_notify_new_update)(struct xrdp_mod* mod,
+                                  int window_id, int notify_id,
+                                  struct rail_notify_state_order* notify_state,
+                                  int flags);
+  int (*server_notify_delete)(struct xrdp_mod* mod, int window_id,
+                              int notify_id);
+  int (*server_monitored_desktop)(struct xrdp_mod* mod,
+                                  struct rail_monitored_desktop_order* mdo,
+                                  int flags);
+
+  long server_dumby[100 - 37]; /* align, 100 minus the number of server
                                   functions above */
   /* common */
   long handle; /* pointer to self as int */
@@ -114,6 +151,12 @@ struct xrdp_palette_item
 struct xrdp_bitmap_item
 {
   int stamp;
+  struct xrdp_bitmap* bitmap;
+};
+
+struct xrdp_os_bitmap_item
+{
+  int id;
   struct xrdp_bitmap* bitmap;
 };
 
@@ -169,6 +212,8 @@ struct xrdp_cache
   int pointer_cache_entries;
   int brush_stamp;
   struct xrdp_brush_item brush_items[64];
+  struct xrdp_os_bitmap_item os_bitmap_items[2000];
+  struct list* xrdp_os_del_list;
 };
 
 struct xrdp_mm
@@ -191,6 +236,7 @@ struct xrdp_mm
   struct trans* chan_trans; /* connection to chansrv */
   int chan_trans_up; /* true once connected to chansrv */
   int delete_chan_trans; /* boolean set when done with channel connection */
+  int usechansrv; /* true if chansrvport is set in xrdp.ini or using sesman */
 };
 
 struct xrdp_key_info
@@ -265,6 +311,12 @@ struct xrdp_wm
   struct xrdp_mm* mm;
   struct xrdp_font* default_font;
   struct xrdp_keymap keymap;
+  int hide_log_window;
+  struct xrdp_bitmap* target_surface; /* either screen or os surface */
+  int current_surface_index;
+  int hints;
+  int allowedchannels[MAX_NR_CHANNELS];
+  int allowedinitialized ;
 };
 
 /* rdp process */
@@ -289,6 +341,7 @@ struct xrdp_listen
   struct trans* listen_trans; /* in tcp listen mode */
   struct list* process_list;
   tbus pro_done_event;
+  struct xrdp_startup_params* startup_params;
 };
 
 /* region */
@@ -374,12 +427,12 @@ struct xrdp_bitmap
 #define DEFAULT_ELEMENT_TOP   35
 #define DEFAULT_BUTTON_W      60
 #define DEFAULT_BUTTON_H      23
-#define DEFAULT_COMBO_W       140
+#define DEFAULT_COMBO_W       210
 #define DEFAULT_COMBO_H       21
-#define DEFAULT_EDIT_W        140
+#define DEFAULT_EDIT_W        210
 #define DEFAULT_EDIT_H        21
-#define DEFAULT_WND_LOGIN_W   400
-#define DEFAULT_WND_LOGIN_H   200
+#define DEFAULT_WND_LOGIN_W   500
+#define DEFAULT_WND_LOGIN_H   250
 #define DEFAULT_WND_HELP_W    340
 #define DEFAULT_WND_HELP_H    300
 #define DEFAULT_WND_LOG_W     400
@@ -410,4 +463,5 @@ struct xrdp_startup_params
   int no_daemon;
   int help;
   int version;
+  int fork;
 };

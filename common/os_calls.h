@@ -64,6 +64,8 @@ g_getchar(void);
 int APP_CC
 g_tcp_set_no_delay(int sck);
 int APP_CC
+g_tcp_set_keepalive(int sck);
+int APP_CC
 g_tcp_socket(void);
 int APP_CC
 g_tcp_local_socket(void);
@@ -104,7 +106,7 @@ g_tcp_can_recv(int sck, int millis);
 int APP_CC
 g_tcp_select(int sck1, int sck2);
 void APP_CC
-g_write_ip_address(int rcv_sck, char* ip_address);
+g_write_ip_address(int rcv_sck, char* ip_address, int bytes);
 void APP_CC
 g_sleep(int msecs);
 tbus APP_CC
@@ -121,6 +123,8 @@ int APP_CC
 g_is_wait_obj_set(tbus obj);
 int APP_CC
 g_delete_wait_obj(tbus obj);
+int APP_CC
+g_close_wait_obj(tbus obj);
 int APP_CC
 g_obj_wait(tbus* read_objs, int rcount, tbus* write_objs, int wcount,
            int mstimeout);
@@ -159,6 +163,8 @@ g_directory_exist(const char* dirname);
 int APP_CC
 g_create_dir(const char* dirname);
 int APP_CC
+g_create_path(const char* path);
+int APP_CC
 g_remove_dir(const char* dirname);
 int APP_CC
 g_file_delete(const char* filename);
@@ -174,6 +180,8 @@ char* APP_CC
 g_strcat(char* dest, const char* src);
 char* APP_CC
 g_strdup(const char* in);
+char* APP_CC
+g_strndup(const char* in, const unsigned int maxlen);
 int APP_CC
 g_strcmp(const char* c1, const char* c2);
 int APP_CC

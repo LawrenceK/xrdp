@@ -14,7 +14,7 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
    xrdp: A Remote Desktop Protocol server.
-   Copyright (C) Jay Sorg 2005-2010
+   Copyright (C) Jay Sorg 2005-2012
 
    libxup main header file
 
@@ -25,6 +25,8 @@
 #include "parse.h"
 #include "os_calls.h"
 #include "defines.h"
+#include "xrdp_client_info.h"
+#include "xrdp_rail.h"
 
 #define CURRENT_MOD_VER 2
 
@@ -87,7 +89,37 @@ struct mod
                                 char* data, int data_len,
                                 int total_data_len, int flags);
   int (*server_bell_trigger)(struct mod* v);
-  tbus server_dumby[100 - 25]; /* align, 100 minus the number of server
+  /* off screen bitmaps */
+  int (*server_create_os_surface)(struct mod* v, int rdpindex,
+                                  int width, int height);
+  int (*server_switch_os_surface)(struct mod* v, int rdpindex);
+  int (*server_delete_os_surface)(struct mod* v, int rdpindex);
+  int (*server_paint_rect_os)(struct mod* v, int x, int y,
+                              int cx, int cy,
+                              int rdpindex, int srcx, int srcy);
+  int (*server_set_hints)(struct mod* v, int hints, int mask);
+  /* rail */
+  int (*server_window_new_update)(struct mod* v, int window_id,
+                                  struct rail_window_state_order* window_state,
+                                  int flags);
+  int (*server_window_delete)(struct mod* v, int window_id);
+  int (*server_window_icon)(struct mod* v,
+                            int window_id, int cache_entry, int cache_id,
+                            struct rail_icon_info* icon_info,
+                            int flags);
+  int (*server_window_cached_icon)(struct mod* v,
+                                   int window_id, int cache_entry,
+                                   int cache_id, int flags);
+  int (*server_notify_new_update)(struct mod* v,
+                                  int window_id, int notify_id,
+                                  struct rail_notify_state_order* notify_state,
+                                  int flags);
+  int (*server_notify_delete)(struct mod* v, int window_id,
+                              int notify_id);
+  int (*server_monitored_desktop)(struct mod* v,
+                                  struct rail_monitored_desktop_order* mdo,
+                                  int flags);
+  tbus server_dumby[100 - 37]; /* align, 100 minus the number of server
                                   functions above */
   /* common */
   tbus handle; /* pointer to self as long */
@@ -105,4 +137,5 @@ struct mod
   char port[256];
   tbus sck_obj;
   int shift_state;
+  struct xrdp_client_info client_info;
 };

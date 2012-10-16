@@ -22,6 +22,20 @@
 
 #include "libxrdp.h"
 
+#if defined(XRDP_FREERDP1)
+#include <freerdp/codec/rfx.h>
+#endif
+
+#define LLOG_LEVEL 2
+#define LLOGLN(_log_level, _params) \
+{ \
+  if (_log_level < LLOG_LEVEL) \
+  { \
+    g_write("xrdp_orders.c [%10.10u]: ", g_time3()); \
+    g_writeln _params ; \
+  } \
+}
+
 /*****************************************************************************/
 struct xrdp_orders* APP_CC
 xrdp_orders_create(struct xrdp_session* session, struct xrdp_rdp* rdp_layer)
@@ -152,7 +166,7 @@ xrdp_orders_force_send(struct xrdp_orders* self)
 /* check if the current order will fit in packet size of 16384, if not */
 /* send what we got and init a new one */
 /* returns error */
-static int APP_CC
+int APP_CC
 xrdp_orders_check(struct xrdp_orders* self, int max_size)
 {
   int size;
@@ -1834,7 +1848,7 @@ xrdp_orders_send_raw_bitmap2(struct xrdp_orders* self,
 int APP_CC
 xrdp_orders_send_bitmap2(struct xrdp_orders* self,
                          int width, int height, int bpp, char* data,
-                         int cache_id, int cache_idx)
+                         int cache_id, int cache_idx, int hints)
 {
   int order_flags = 0;
   int len = 0;
@@ -1869,7 +1883,7 @@ xrdp_orders_send_bitmap2(struct xrdp_orders* self,
   p = s->p;
   i = height;
   lines_sending = xrdp_bitmap_compress(data, width, height, s, bpp, 16384,
-                                       i - 1, temp_s, e);
+                                         i - 1, temp_s, e);
   if (lines_sending != height)
   {
     free_stream(s);
@@ -1887,7 +1901,7 @@ height(%d)", lines_sending, height);
   len = (bufsize + 6) - 7; /* length after type minus 7 */
   out_uint16_le(self->out_s, len);
   i = (((Bpp + 2) << 3) & 0x38) | (cache_id & 7);
-  i = i | 0x400;
+  i = i | (0x08 << 7); /* CBR2_NO_BITMAP_COMPRESSION_HDR */
   out_uint16_le(self->out_s, i); /* flags */
   out_uint8(self->out_s, RDP_ORDER_BMPCACHE2); /* type */
   out_uint8(self->out_s, width + e);
@@ -1900,6 +1914,182 @@ height(%d)", lines_sending, height);
   out_uint8a(self->out_s, s->data, bufsize);
   free_stream(s);
   free_stream(temp_s);
+  return 0;
+}
+
+/*****************************************************************************/
+static int
+xrdp_orders_send_as_jpeg(struct xrdp_orders* self,
+                         int width, int height, int bpp, int hints)
+{
+  if (hints & 1)
+  {
+    return 0;
+  }
+  if (bpp != 24)
+  {
+    return 0;
+  }
+  if (width * height < 64)
+  {
+    return 0;
+  }
+  return 1;
+}
+
+#if defined(XRDP_FREERDP1)
+/*****************************************************************************/
+/*  secondary drawing order (bitmap v3) using remotefx compression */
+static int APP_CC
+xrdp_orders_send_as_rfx(struct xrdp_orders* self,
+                        int width, int height, int bpp,
+                        int hints)
+{
+  if (hints & 1)
+  {
+    return 0;
+  }
+  if (bpp != 24)
+  {
+    return 0;
+  }
+  if (width * height < 64)
+  {
+    return 0;
+  }
+  return 1;
+}
+#endif
+
+/*****************************************************************************/
+static int APP_CC
+xrdp_orders_out_v3(struct xrdp_orders* self, int cache_id, int cache_idx,
+                   char* buf, int bufsize, int width, int height, int bpp,
+                   int codec_id)
+{
+  int Bpp;
+  int order_flags;
+  int len;
+  int i;
+
+  Bpp = (bpp + 7) / 8;
+  xrdp_orders_check(self, bufsize + 30);
+  self->order_count++;
+  order_flags = RDP_ORDER_STANDARD | RDP_ORDER_SECONDARY;
+  out_uint8(self->out_s, order_flags);
+  len = (bufsize + 22) - 7; /* length after type minus 7 */
+  out_uint16_le(self->out_s, len);
+  i = (((Bpp + 2) << 3) & 0x38) | (cache_id & 7);
+  out_uint16_le(self->out_s, i); /* flags */
+  out_uint8(self->out_s, RDP_ORDER_BMPCACHE3); /* type */
+  /* cache index */
+  out_uint16_le(self->out_s, cache_idx);
+  /* persistant cache key 1/2 */
+  out_uint32_le(self->out_s, 0);
+  out_uint32_le(self->out_s, 0);
+  /* bitmap data */
+  out_uint8(self->out_s, bpp);
+  out_uint8(self->out_s, 0); /* reserved */
+  out_uint8(self->out_s, 0); /* reserved */
+  out_uint8(self->out_s, codec_id);
+  out_uint16_le(self->out_s, width);
+  out_uint16_le(self->out_s, height);
+  out_uint32_le(self->out_s, bufsize);
+  out_uint8a(self->out_s, buf, bufsize);
+  return 0;
+}
+
+/*****************************************************************************/
+/*  secondary drawing order (bitmap v3) using remotefx compression */
+int APP_CC
+xrdp_orders_send_bitmap3(struct xrdp_orders* self,
+                         int width, int height, int bpp, char* data,
+                         int cache_id, int cache_idx, int hints)
+{
+  int e;
+  int bufsize;
+  int quality;
+  struct stream* xr_s; /* xrdp stream */
+  struct stream* temp_s; /* xrdp stream */
+  struct xrdp_client_info* ci;
+#if defined(XRDP_FREERDP1)
+  STREAM* fr_s; /* FreeRDP stream */
+  RFX_CONTEXT* context;
+  RFX_RECT rect;
+#endif
+
+  ci = &(self->rdp_layer->client_info);
+  if (ci->v3_codec_id == 0)
+  {
+    return 2;
+  }
+  if (ci->v3_codec_id == ci->rfx_codec_id)
+  {
+#if defined(XRDP_FREERDP1)
+    if (!xrdp_orders_send_as_rfx(self, width, height, bpp, hints))
+    {
+      return 2;
+    }
+    LLOGLN(10, ("xrdp_orders_send_bitmap3: rfx"));
+    context = (RFX_CONTEXT*)(self->rdp_layer->rfx_enc);
+    make_stream(xr_s);
+    init_stream(xr_s, 16384);
+    fr_s = stream_new(0);
+    stream_attach(fr_s, (tui8*)(xr_s->data), 16384);
+    rect.x = 0;
+    rect.y = 0;
+    rect.width = width;
+    rect.height = height;
+    rfx_compose_message(context, fr_s, &rect, 1, (tui8*)data, width,
+                        height, width * 4);
+    bufsize = stream_get_length(fr_s);
+    xrdp_orders_out_v3(self, cache_id, cache_idx, (char*)(fr_s->data), bufsize,
+                       width, height, bpp,ci->v3_codec_id);
+    stream_detach(fr_s);
+    stream_free(fr_s);
+    free_stream(xr_s);
+    return 0;
+#else
+    return 2;
+#endif
+  }
+  else if (ci->v3_codec_id == ci->jpeg_codec_id)
+  {
+#if defined(XRDP_JPEG)
+    if (!xrdp_orders_send_as_jpeg(self, width, height, bpp, hints))
+    {
+      LLOGLN(10, ("xrdp_orders_send_bitmap3: jpeg skipped"));
+      return 2;
+    }
+    LLOGLN(10, ("xrdp_orders_send_bitmap3: jpeg"));
+    e = width % 4;
+    if (e != 0)
+    {
+      e = 4 - e;
+    }
+    make_stream(xr_s);
+    init_stream(xr_s, 16384);
+    make_stream(temp_s);
+    init_stream(temp_s, 16384);
+    quality = ci->jpeg_prop[0];
+    xrdp_jpeg_compress(data, width, height, xr_s, bpp, 16384,
+                       height - 1, temp_s, e, quality);
+    s_mark_end(xr_s);
+    bufsize = (int)(xr_s->end - xr_s->data);
+    xrdp_orders_out_v3(self, cache_id, cache_idx, (char*)(xr_s->data), bufsize,
+                       width + e, height, bpp,ci->v3_codec_id);
+    free_stream(xr_s);
+    free_stream(temp_s);
+    return 0;
+#else
+    return 2;
+#endif
+  }
+  else
+  {
+    g_writeln("xrdp_orders_send_bitmap3: todo unknown codec");
+    return 1;
+  }
   return 0;
 }
 
@@ -1928,5 +2118,72 @@ xrdp_orders_send_brush(struct xrdp_orders* self, int width, int height,
   out_uint8(self->out_s, type);
   out_uint8(self->out_s, size);
   out_uint8a(self->out_s, data, size);
+  return 0;
+}
+
+/*****************************************************************************/
+/* returns error */
+/* send an off screen bitmap entry */
+int APP_CC
+xrdp_orders_send_create_os_surface(struct xrdp_orders* self, int id,
+                                   int width, int height,
+                                   struct list* del_list)
+{
+  int order_flags;
+  int cache_id;
+  int flags;
+  int index;
+  int bytes;
+  int num_del_list;
+
+  bytes = 7;
+  num_del_list = del_list->count;
+  if (num_del_list > 0)
+  {
+    bytes += 2;
+    bytes += num_del_list * 2;
+  }
+  xrdp_orders_check(self, bytes);
+  self->order_count++;
+  order_flags = RDP_ORDER_SECONDARY;
+  order_flags |= 1 << 2; /* type RDP_ORDER_ALTSEC_CREATE_OFFSCR_BITMAP */
+  out_uint8(self->out_s, order_flags);
+  cache_id = id & 0x7fff;
+  flags = cache_id;
+  if (num_del_list > 0)
+  {
+    flags |= 0x8000;
+  }
+  out_uint16_le(self->out_s, flags);
+  out_uint16_le(self->out_s, width);
+  out_uint16_le(self->out_s, height);
+  if (num_del_list > 0)
+  {
+    /* delete list */
+    out_uint16_le(self->out_s, num_del_list);
+    for (index = 0; index < num_del_list; index++)
+    {
+      cache_id = list_get_item(del_list, index) & 0x7fff;
+      out_uint16_le(self->out_s, cache_id);
+    }
+  }
+  return 0;
+}
+
+/*****************************************************************************/
+/* returns error */
+int APP_CC
+xrdp_orders_send_switch_os_surface(struct xrdp_orders* self, int id)
+{
+  int order_flags;
+  int cache_id;
+
+  xrdp_orders_check(self, 3);
+  self->order_count++;
+  order_flags = RDP_ORDER_SECONDARY;
+  order_flags |= 0 << 2; /* type RDP_ORDER_ALTSEC_SWITCH_SURFACE */
+  out_uint8(self->out_s, order_flags);
+  cache_id = id & 0xffff;
+  out_uint16_le(self->out_s, cache_id);
   return 0;
 }

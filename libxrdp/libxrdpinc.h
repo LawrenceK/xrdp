@@ -23,51 +23,10 @@
 #ifndef LIBXRDPINC_H
 #define LIBXRDPINC_H
 
-struct xrdp_client_info
-{
-  int bpp;
-  int width;
-  int height;
-  /* bitmap cache info */
-  int cache1_entries;
-  int cache1_size;
-  int cache2_entries;
-  int cache2_size;
-  int cache3_entries;
-  int cache3_size;
-  int bitmap_cache_persist_enable; /* 0 or 2 */
-  int bitmap_cache_version; /* 0 = original version, 2 = v2 */
-  /* pointer info */
-  int pointer_cache_entries;
-  /* other */
-  int use_bitmap_comp;
-  int use_bitmap_cache;
-  int op1; /* use smaller bitmap header, non cache */
-  int op2; /* use smaller bitmap header in bitmap cache */
-  int desktop_cache;
-  int use_compact_packets; /* rdp5 smaller packets */
-  char hostname[32];
-  int build;
-  int keylayout;
-  char username[256];
-  char password[256];
-  char domain[256];
-  char program[256];
-  char directory[256];
-  int rdp_compression;
-  int rdp_autologin;
-  int crypt_level; /* 1, 2, 3 = low, medium, high */
-  int channel_code; /* 0 = no channels 1 = channels */
-  int sound_code; /* 1 = leave sound at server */
-  int is_mce;
-  int rdp5_performanceflags;
-  int brush_cache_code; /* 0 = no cache 1 = 8x8 standard cache
-                           2 = arbitrary dimensions */
-  char client_ip[256];
-  int max_bpp;
-  char *osirium_preamble_buffer;
-};
+#include "xrdp_rail.h"
 
+/* struct xrdp_client_info moved to xrdp_client_info.h */
+c
 struct xrdp_brush
 {
   int x_orgin;
@@ -205,7 +164,11 @@ libxrdp_orders_send_raw_bitmap2(struct xrdp_session* session,
 int DEFAULT_CC
 libxrdp_orders_send_bitmap2(struct xrdp_session* session,
                             int width, int height, int bpp, char* data,
-                            int cache_id, int cache_idx);
+                            int cache_id, int cache_idx, int hints);
+int DEFAULT_CC
+libxrdp_orders_send_bitmap3(struct xrdp_session* session,
+                            int width, int height, int bpp, char* data,
+                            int cache_id, int cache_idx, int hints);
 int DEFAULT_CC
 libxrdp_query_channel(struct xrdp_session* session, int index,
                       char* channel_name, int* channel_flags);
@@ -219,5 +182,37 @@ int DEFAULT_CC
 libxrdp_orders_send_brush(struct xrdp_session* session,
                           int width, int height, int bpp, int type,
                           int size, char* data, int cache_id);
+int DEFAULT_CC
+libxrdp_orders_send_create_os_surface(struct xrdp_session* session, int id,
+                                      int width, int height,
+                                      struct list* del_list);
+int DEFAULT_CC
+libxrdp_orders_send_switch_os_surface(struct xrdp_session* session, int id);
+int DEFAULT_CC
+libxrdp_window_new_update(struct xrdp_session* session, int window_id,
+                          struct rail_window_state_order* window_state,
+                          int flags);
+int DEFAULT_CC
+libxrdp_window_delete(struct xrdp_session* session, int window_id);
+int DEFAULT_CC
+libxrdp_window_icon(struct xrdp_session* session, int window_id,
+                    int cache_entry, int cache_id,
+                    struct rail_icon_info* icon_info, int flags);
+int DEFAULT_CC
+libxrdp_window_cached_icon(struct xrdp_session* session, int window_id,
+                           int cache_entry, int cache_id,
+                           int flags);
+int DEFAULT_CC
+libxrdp_notify_new_update(struct xrdp_session* session,
+                          int window_id, int notify_id,
+                          struct rail_notify_state_order* notify_state,
+                          int flags);
+int DEFAULT_CC
+libxrdp_notify_delete(struct xrdp_session* session,
+                      int window_id, int notify_id);
+int DEFAULT_CC
+libxrdp_monitored_desktop(struct xrdp_session* session,
+                          struct rail_monitored_desktop_order* mdo,
+                          int flags);
 
 #endif

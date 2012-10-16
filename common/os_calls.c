@@ -71,6 +71,10 @@
 extern char** environ;
 #endif
 
+#if defined(__linux__)
+#include <linux/unistd.h>
+#endif
+
 /* for solaris */
 #if !defined(PF_LOCAL)
 #define PF_LOCAL AF_UNIX
@@ -321,9 +325,11 @@ g_getchar(void)
 }
 
 /*****************************************************************************/
+/*Returns 0 on success*/
 int APP_CC
 g_tcp_set_no_delay(int sck)
 {
+  int ret = 1; /* error */
 #if defined(_WIN32)
   int option_value;
   int option_len;
@@ -341,11 +347,63 @@ g_tcp_set_no_delay(int sck)
     {
       option_value = 1;
       option_len = sizeof(option_value);
-      setsockopt(sck, IPPROTO_TCP, TCP_NODELAY, (char*)&option_value,
-                 option_len);
+      if (setsockopt(sck, IPPROTO_TCP, TCP_NODELAY, (char*)&option_value,
+                     option_len) == 0)
+      {
+        ret = 0; /* success */
+      }
+      else
+      {
+        g_writeln("Error setting tcp_nodelay");
+      }
     }
   }
-  return 0;
+  else
+  {
+    g_writeln("Error getting tcp_nodelay");
+  }
+  return ret;
+}
+
+/*****************************************************************************/
+/*Returns 0 on success*/
+int APP_CC
+g_tcp_set_keepalive(int sck)
+{
+  int ret = 1; /* error */
+#if defined(_WIN32)
+  int option_value;
+  int option_len;
+#else
+  int option_value;
+  unsigned int option_len;
+#endif
+
+  option_len = sizeof(option_value);
+  /* SOL_TCP IPPROTO_TCP */
+  if (getsockopt(sck, SOL_SOCKET, SO_KEEPALIVE, (char*)&option_value,
+                 &option_len) == 0)
+  {
+    if (option_value == 0)
+    {
+      option_value = 1;
+      option_len = sizeof(option_value);
+      if (setsockopt(sck, SOL_SOCKET, SO_KEEPALIVE, (char*)&option_value,
+                     option_len) == 0)
+      {
+        ret = 0; /* success */
+      }
+      else
+      {
+        g_writeln("Error setting tcp_keepalive");
+      }
+    }
+  }
+  else
+  {
+    g_writeln("Error getting tcp_keepalive");
+  }
+  return ret;
 }
 
 /*****************************************************************************/
@@ -415,7 +473,6 @@ g_tcp_close(int sck)
   {
     return;
   }
-  shutdown(sck, 2);
 #if defined(_WIN32)
   closesocket(sck);
 #else
@@ -563,31 +620,37 @@ g_tcp_accept(int sck)
 
 /*****************************************************************************/
 void APP_CC
-g_write_ip_address(int rcv_sck, char* ip_address)
+g_write_ip_address(int rcv_sck, char* ip_address, int bytes)
 {
   struct sockaddr_in s;
   struct in_addr in;
+#if defined(_WIN32)
   int len;
+#else
+  unsigned int len;
+#endif
   int ip_port;
+  int ok;
 
-  memset(&s,0,sizeof(&s));
+  ok = 0;
+  memset(&s, 0, sizeof(s));
   len = sizeof(s);
-  getpeername(rcv_sck,(struct sockaddr*)&s, &len);
-
-  memset(&in,0,sizeof(in));
-  in.s_addr = s.sin_addr.s_addr;
-
-  ip_port = ntohs(s.sin_port);
-  
-  if (ip_port != 0)
+  if (getpeername(rcv_sck,(struct sockaddr*)&s, &len) == 0)
   {
-    sprintf(ip_address, "%s:%d - socket: %d", inet_ntoa(in), ip_port, rcv_sck);
+    memset(&in, 0, sizeof(in));
+    in.s_addr = s.sin_addr.s_addr;
+    ip_port = ntohs(s.sin_port);
+    if (ip_port != 0)
+    {
+      ok = 1;
+      snprintf(ip_address, bytes, "%s:%d - socket: %d", inet_ntoa(in),
+              ip_port, rcv_sck);
+    }
   }
-  else
+  if (!ok)
   {
-    sprintf(ip_address, "NULL:NULL - socket: %d", rcv_sck);
+    snprintf(ip_address, bytes, "NULL:NULL - socket: %d", rcv_sck);
   }
-
 }
 
 /*****************************************************************************/
@@ -998,6 +1061,19 @@ g_delete_wait_obj(tbus obj)
 
 /*****************************************************************************/
 /* returns error */
+/* close but do not delete the wait obj, used after fork */
+int APP_CC
+g_close_wait_obj(tbus obj)
+{
+#ifdef _WIN32
+#else
+  close((int)obj);
+#endif
+  return 0;
+}
+
+/*****************************************************************************/
+/* returns error */
 int APP_CC
 g_obj_wait(tbus* read_objs, int rcount, tbus* write_objs, int wcount,
            int mstimeout)
@@ -1056,27 +1132,46 @@ g_obj_wait(tbus* read_objs, int rcount, tbus* write_objs, int wcount,
   }
   FD_ZERO(&rfds);
   FD_ZERO(&wfds);
-  for (i = 0; i < rcount; i++)
+  /* Find the highest descriptor number in read_obj */
+  if (read_objs!=NULL)
   {
-    sck = (int)(read_objs[i]);
-    if (sck > 0) {
-      FD_SET(sck, &rfds);
-      if (sck > max)
+    for (i = 0; i < rcount; i++)
+    {
+      sck = (int)(read_objs[i]);
+      if (sck > 0)
       {
-        max = sck;
+        FD_SET(sck, &rfds);
+        if (sck > max)
+        {
+          max = sck; /* max holds the highest socket/descriptor number */
+        }
       }
     }
   }
-  for (i = 0; i < wcount; i++)
+  else if (rcount>0)
   {
-    sck = (int)(write_objs[i]);
-    if (sck > 0) {
-      FD_SET(sck, &wfds);
-      if (sck > max)
+    g_writeln("Programming error read_objs is null");
+    return 1; /* error */
+  }
+  if (write_objs!=NULL)
+  {
+    for (i = 0; i < wcount; i++)
+    {
+      sck = (int)(write_objs[i]);
+      if (sck > 0)
       {
-        max = sck;
+        FD_SET(sck, &wfds);
+        if (sck > max)
+        {
+          max = sck; /* max holds the highest socket/descriptor number */
+        }
       }
     }
+  }
+  else if (wcount > 0)
+  {
+    g_writeln("Programming error write_objs is null");
+    return 1; /* error */
   }
   res = select(max + 1, &rfds, &wfds, 0, ptime);
   if (res < 0)
@@ -1089,7 +1184,7 @@ g_obj_wait(tbus* read_objs, int rcount, tbus* write_objs, int wcount,
     {
       return 0;
     }
-    return 1;
+    return 1; /* error */
   }
   return 0;
 #endif
@@ -1309,7 +1404,7 @@ g_mkdir(const char* dirname)
 
 /*****************************************************************************/
 /* gets the current working directory and puts up to maxlen chars in
-   dirname 
+   dirname
    always returns 0 */
 char* APP_CC
 g_get_current_dir(char* dirname, int maxlen)
@@ -1388,6 +1483,44 @@ g_create_dir(const char* dirname)
 #else
   return mkdir(dirname, (mode_t)-1) == 0;
 #endif
+}
+
+/*****************************************************************************/
+/* will try to create directories up to last / in name
+   example /tmp/a/b/c/readme.txt will try to create /tmp/a/b/c
+   returns boolean */
+int APP_CC
+g_create_path(const char* path)
+{
+  char* pp;
+  char* sp;
+  char* copypath;
+  int status;
+
+  status = 1;
+  copypath = g_strdup(path);
+  pp = copypath;
+  sp = strchr(pp, '/');
+  while (sp != 0)
+  {
+    if (sp != pp)
+    {
+      *sp = 0;
+      if (!g_directory_exist(copypath))
+      {
+        if (!g_create_dir(copypath))
+        {
+          status = 0;
+          break;
+        }
+      }
+      *sp = '/';
+    }
+    pp = sp + 1;
+    sp = strchr(pp, '/');
+  }
+  g_free(copypath);
+  return status;
 }
 
 /*****************************************************************************/
@@ -1511,12 +1644,38 @@ g_strdup(const char* in)
   }
   len = g_strlen(in);
   p = (char*)g_malloc(len + 1, 0);
-  if (p != NULL) {
+  if (p != NULL)
+  {
     g_strcpy(p, in);
   }
   return p;
 }
+/*****************************************************************************/
+/* if in = 0, return 0 else return newly alloced copy of input string
+ * if the input string is larger than maxlen the returned string will be
+ * truncated. All strings returned will include null termination*/
+char* APP_CC
+g_strndup(const char* in, const unsigned int maxlen)
+{
+  int len;
+  char* p;
 
+  if (in == 0)
+  {
+    return 0;
+  }
+  len = g_strlen(in);
+  if (len>maxlen)
+  {
+     len = maxlen - 1;
+  }
+  p = (char*)g_malloc(len + 2, 0);
+  if (p != NULL)
+  {
+    g_strncpy(p, in,len+1);
+  }
+  return p;
+}
 /*****************************************************************************/
 int APP_CC
 g_strcmp(const char* c1, const char* c2)
